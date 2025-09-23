@@ -1,0 +1,11 @@
+front/node_modules
+front/build
+
+back/db/*.db
+
+.env
+
+*.log
+
+.vscode/
+.idea/

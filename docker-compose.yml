@@ -24,18 +24,17 @@ services:
     restart: unless-stopped
 
   db:
-    container_name: shop_database
-    build:
-      context: ./db
-      dockerfile: Dockerfile
+    image: postgres:15
+    container_name: shop_db
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: shop
-      POSTGRES_USER: ${DB_ADMIN}
-      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD}
-      DB_CLIENT_USER: ${DB_CLIENT_USER}
-      DB_CLIENT_PASSWORD: ${DB_CLIENT_PASSWORD}
-      DB_ADMIN_SHOP_USER: ${DB_ADMIN_SHOP_USER}
-      DB_ADMIN_SHOP_PASSWORD: ${DB_ADMIN_SHOP_PASSWORD}
-      DB_ADMIN_SHOP: ${DB_ADMIN_SHOP}
+      POSTGRES_USER: market_user
+      POSTGRES_PASSWORD: market_pass
+      POSTGRES_DB: market_db
     ports:
       - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d  # SQL скрипты для инициализации
+  volumes:
+    db_data:

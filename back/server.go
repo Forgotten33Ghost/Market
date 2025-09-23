@@ -1,5 +1,4 @@
 package main
-
 import (
 	"crypto/rand"
 	"database/sql"
@@ -16,20 +15,23 @@ import (
 )
 
 type product struct {
-	Id        uint32 `json:"id"`
-	Available bool   `json:"available"`
-	Name      string `json:"name"`
-	Price     uint32 `json:"price"`
-	Gramm     bool   `json:"gramm"`
-	URL       string `json:"url"`
+	Id        	uint32 		`json:"id"`
+	Available 	bool   		`json:"available"`
+	Name      	string 		`json:"name"`
+	Description string 		`json:"description"`
+	Price     	float64 	`json:"price"`
+	CategoryID  uint8   	`json:"categoryID"`
+	Category	string  	`json:"category"`
+	URL       	string 		`json:"url"`
 }
 
 type createProduct struct {
-	Available bool   `json:"available"`
-	Name      string `json:"name"`
-	Price     uint32 `json:"price"`
-	Gramm     bool   `json:"gramm"`
-	URL       string `json:"url"`
+	Available 	bool   		`json:"available"`
+	Name      	string 		`json:"name"`
+	Description string 		`json:"description"`
+	Price     	float64 	`json:"price"`
+	CategoryID  uint8   	`json:"categoryID"`
+	URL       	string 		`json:"url"`
 }
 
 type admin struct {
@@ -39,6 +41,15 @@ type admin struct {
 
 type deleteRequest struct {
 	ID int `json:"id"`
+}
+
+type createCategory struct {
+	Name string `json:"name"`
+}
+
+type category struct {
+    ID   uint32 `json:"id"`
+    Name string `json:"name"`
 }
 
 // Хранилище токенов в памяти
@@ -75,19 +86,26 @@ func getDBWithUser(user, password string) (*sql.DB, error) {
 	return sql.Open("postgres", connStr)
 }
 
-// Публичный эндпоинт получения товаров
-func read(w http.ResponseWriter, r *http.Request) {
+// Получение всех товаров
+func readProducts(w http.ResponseWriter, r *http.Request) {
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
-		http.Error(w, "Ошибка подключения к базе данных", http.StatusInternalServerError)
+		log.Printf("[ERROR] readProducts: Ошибка подключения к БД: %v", err)
+		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
 		return
 	}
 	defer db.Close()
 
-	rows, err := db.Query("SELECT i_id, i_available, i_name, i_price, i_gramm, i_URL FROM ITEMS")
+	rows, err := db.Query(`
+		SELECT p.id, p.name, p.description, p.price, p.category_id, c.name as category_name, p.available,
+		       pi.image_url
+		FROM products p
+		LEFT JOIN categories c ON p.category_id = c.id
+		LEFT JOIN product_images pi ON pi.product_id = p.id
+	`)
 	if err != nil {
+		log.Printf("[ERROR] readProducts: Ошибка запроса к базе: %v", err)
 		http.Error(w, "Ошибка запроса к базе", http.StatusInternalServerError)
-		log.Printf("Ошибка запроса: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -95,17 +113,19 @@ func read(w http.ResponseWriter, r *http.Request) {
 	products := []product{}
 	for rows.Next() {
 		p := product{}
-		if err := rows.Scan(&p.Id, &p.Available, &p.Name, &p.Price, &p.Gramm, &p.URL); err != nil {
+		if err := rows.Scan(&p.Id, &p.Name, &p.Description, &p.Price, &p.CategoryID, &p.Category, &p.Available, &p.URL); err != nil {
+			log.Printf("[ERROR] readProducts: Ошибка чтения данных: %v", err)
 			http.Error(w, "Ошибка чтения данных", http.StatusInternalServerError)
 			return
 		}
 		products = append(products, p)
 	}
 
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(products)
 }
 
-// Эндпоинт логина админа
+// Логин админа
 func login(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
@@ -114,24 +134,25 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 	var a admin
 	if err := json.NewDecoder(r.Body).Decode(&a); err != nil {
+		log.Printf("[ERROR] login: Ошибка декодирования логина: %v", err)
 		http.Error(w, "Неверные данные", http.StatusBadRequest)
 		return
 	}
 
 	db, err := getDBWithUser(a.Login, a.Password)
 	if err != nil {
+		log.Printf("[ERROR] login: Ошибка подключения: %v", err)
 		http.Error(w, "Неверный логин или пароль", http.StatusUnauthorized)
-		log.Printf("Ошибка подключения: %v", err)
 		return
 	}
 	defer db.Close()
 
 	if err := db.Ping(); err != nil {
+		log.Printf("[ERROR] login: Ошибка ping БД: %v", err)
 		http.Error(w, "Неверный логин или пароль", http.StatusUnauthorized)
 		return
 	}
 
-	// Генерация токена и сохранение
 	token := generateToken()
 	adminTokens.Lock()
 	adminTokens.m[token] = a.Login
@@ -139,16 +160,15 @@ func login(w http.ResponseWriter, r *http.Request) {
 
 	go func(t string) {
 		time.Sleep(24 * time.Hour)
-		adminTokens.Lock()
 		delete(adminTokens.m, t)
-		adminTokens.Unlock()
 	}(token)
 
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
 
 // Создание товара
-func create(w http.ResponseWriter, r *http.Request) {
+func createProductHandler(w http.ResponseWriter, r *http.Request) {
 	if !isAdmin(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -156,29 +176,46 @@ func create(w http.ResponseWriter, r *http.Request) {
 
 	var item createProduct
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		log.Printf("[ERROR] createProductHandler: Ошибка декодирования: %v", err)
 		http.Error(w, "Неверные данные", http.StatusBadRequest)
 		return
 	}
 
-	db, err := getDBWithUser(os.Getenv("DB_ADMIN_USER"), os.Getenv("DB_ADMIN_PASSWORD"))
+	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
+		log.Printf("[ERROR] createProductHandler: Ошибка подключения к БД: %v", err)
 		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
 		return
 	}
 	defer db.Close()
 
-	_, err = db.Exec("INSERT INTO ITEMS (i_available, i_name, i_price, i_gramm, i_URL) VALUES ($1,$2,$3,$4,$5)",
-		item.Available, item.Name, item.Price, item.Gramm, item.URL)
+	var productID int
+	err = db.QueryRow(
+		`INSERT INTO products (name, description, price, category_id, available) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		item.Name, item.Description, item.Price, item.CategoryID, item.Available,
+	).Scan(&productID)
 	if err != nil {
+		log.Printf("[ERROR] createProductHandler: Ошибка создания товара: %v", err)
 		http.Error(w, "Ошибка создания товара", http.StatusInternalServerError)
 		return
 	}
 
+	if item.URL != "" {
+		_, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)", productID, item.URL)
+		if err != nil {
+			log.Printf("[ERROR] createProductHandler: Ошибка вставки изображения: %v", err)
+			http.Error(w, "Ошибка добавления изображения", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(item)
 }
 
 // Обновление товара
-func update(w http.ResponseWriter, r *http.Request) {
+func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 	if !isAdmin(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -186,29 +223,57 @@ func update(w http.ResponseWriter, r *http.Request) {
 
 	var item product
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		log.Printf("[ERROR] updateProductHandler: Ошибка декодирования: %v", err)
 		http.Error(w, "Неверные данные", http.StatusBadRequest)
 		return
 	}
 
-	db, err := getDBWithUser(os.Getenv("DB_ADMIN_USER"), os.Getenv("DB_ADMIN_PASSWORD"))
+	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
+		log.Printf("[ERROR] updateProductHandler: Ошибка подключения к БД: %v", err)
 		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
 		return
 	}
 	defer db.Close()
 
-	_, err = db.Exec(`UPDATE ITEMS SET i_name=$1, i_price=$2, i_gramm=$3, i_available=$4, i_URL=$5 WHERE i_id=$6`,
-		item.Name, item.Price, item.Gramm, item.Available, item.URL, item.Id)
+	_, err = db.Exec(
+		`UPDATE products SET name=$1, description=$2, price=$3, category_id=$4, available=$5 WHERE id=$6`,
+		item.Name, item.Description, item.Price, item.CategoryID, item.Available, item.Id,
+	)
 	if err != nil {
-		http.Error(w, "Ошибка обновления", http.StatusInternalServerError)
+		log.Printf("[ERROR] updateProductHandler: Ошибка обновления товара: %v", err)
+		http.Error(w, "Ошибка обновления товара", http.StatusInternalServerError)
 		return
 	}
 
+	if item.URL != "" {
+		var imageID int
+		err = db.QueryRow("SELECT id FROM product_images WHERE product_id=$1", item.Id).Scan(&imageID)
+		if err == sql.ErrNoRows {
+			_, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1,$2)", item.Id, item.URL)
+		} else if err == nil {
+			_, err = db.Exec("UPDATE product_images SET image_url=$1 WHERE id=$2", item.URL, imageID)
+		}
+		if err != nil {
+			log.Printf("[ERROR] updateProductHandler: Ошибка обновления изображения: %v", err)
+			http.Error(w, "Ошибка обновления изображения", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	row := db.QueryRow("SELECT name FROM categories WHERE id=$1", item.CategoryID)
+	if err := row.Scan(&item.Category); err != nil {
+		log.Printf("[WARN] updateProductHandler: Не удалось получить название категории: %v", err)
+		item.Category = ""
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(item)
 }
 
 // Удаление товара
-func delete(w http.ResponseWriter, r *http.Request) {
+func deleteProductHandler(w http.ResponseWriter, r *http.Request) {
 	if !isAdmin(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -216,24 +281,92 @@ func delete(w http.ResponseWriter, r *http.Request) {
 
 	var req deleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("[ERROR] deleteProductHandler: Ошибка декодирования: %v", err)
 		http.Error(w, "Неверные данные", http.StatusBadRequest)
 		return
 	}
 
-	db, err := getDBWithUser(os.Getenv("DB_ADMIN_USER"), os.Getenv("DB_ADMIN_PASSWORD"))
+	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
+		log.Printf("[ERROR] deleteProductHandler: Ошибка подключения к БД: %v", err)
 		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
 		return
 	}
 	defer db.Close()
 
-	_, err = db.Exec("DELETE FROM ITEMS WHERE i_id=$1", req.ID)
+	_, err = db.Exec("DELETE FROM products WHERE id=$1", req.ID)
 	if err != nil {
-		http.Error(w, "Ошибка удаления", http.StatusInternalServerError)
+		log.Printf("[ERROR] deleteProductHandler: Ошибка удаления товара: %v", err)
+		http.Error(w, "Ошибка удаления товара", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// Создание категории
+func createCategoryHandler(w http.ResponseWriter, r *http.Request) {
+	if !isAdmin(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var c createCategory
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+		log.Printf("[ERROR] createCategoryHandler: Ошибка декодирования: %v", err)
+		http.Error(w, "Неверные данные", http.StatusBadRequest)
+		return
+	}
+
+	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
+	if err != nil {
+		log.Printf("[ERROR] createCategoryHandler: Ошибка подключения к БД: %v", err)
+		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	_, err = db.Exec("INSERT INTO categories (name) VALUES ($1)", c.Name)
+	if err != nil {
+		log.Printf("[ERROR] createCategoryHandler: Ошибка вставки категории: %v", err)
+		http.Error(w, "Ошибка создания категории", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+}
+
+// Получение категорий
+func getCategories(w http.ResponseWriter, r *http.Request) {
+	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
+	if err != nil {
+		log.Printf("[ERROR] getCategories: Ошибка подключения к БД: %v", err)
+		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	rows, err := db.Query("SELECT id, name FROM categories")
+	if err != nil {
+		log.Printf("[ERROR] getCategories: Ошибка запроса категорий: %v", err)
+		http.Error(w, "Ошибка запроса категорий", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	categories := []category{}
+	for rows.Next() {
+		var c category
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			log.Printf("[ERROR] getCategories: Ошибка чтения категорий: %v", err)
+			http.Error(w, "Ошибка чтения категорий", http.StatusInternalServerError)
+			return
+		}
+		categories = append(categories, c)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(categories)
 }
 
 // CORS
@@ -253,11 +386,14 @@ func withCORS(h http.Handler) http.Handler {
 func main() {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/read", read)
+	mux.HandleFunc("/api/read", readProducts)
 	mux.HandleFunc("/api/admin/login", login)
-	mux.HandleFunc("/api/admin/create", create)
-	mux.HandleFunc("/api/admin/update", update)
-	mux.HandleFunc("/api/admin/delete", delete)
+	mux.HandleFunc("/api/admin/create", createProductHandler)
+	mux.HandleFunc("/api/admin/update", updateProductHandler)
+	mux.HandleFunc("/api/admin/delete", deleteProductHandler)
+	mux.HandleFunc("/api/admin/category/create", createCategoryHandler)
+	mux.HandleFunc("/api/categories", getCategories)
+
 
 	fmt.Println("Server is listening on :8080...")
 	http.ListenAndServe(":8080", withCORS(mux))

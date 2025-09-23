@@ -28,13 +28,13 @@ services:
     container_name: shop_db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: market_user
-      POSTGRES_PASSWORD: market_pass
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
       POSTGRES_DB: market_db
     ports:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d  # SQL скрипты для инициализации
-  volumes:
-    db_data:
+      - ./db/init:/docker-entrypoint-initdb.d
+volumes:
+  db_data:

@@ -1,0 +1,68 @@
+/* Основной контейнер логина */
+.login {
+    max-width: 400px;
+    margin: 80px auto;
+    padding: 30px 25px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+    font-family: 'Arial', sans-serif;
+    text-align: center;
+}
+
+/* Заголовок */
+.login h2 {
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: 25px;
+    color: #2d3436;
+}
+
+/* Поля формы */
+.login form div {
+    margin-bottom: 15px;
+    text-align: left;
+}
+
+.login label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 5px;
+}
+
+.login input[type="text"],
+.login input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    box-sizing: border-box;
+    transition: border-color 0.3s ease;
+}
+
+.login input[type="text"]:focus,
+.login input[type="password"]:focus {
+    border-color: #6e8efb;
+    outline: none;
+}
+
+/* Кнопка входа */
+.login button[type="submit"] {
+    width: 100%;
+    padding: 12px;
+    background: linear-gradient(135deg, #6e8efb, #a777e3);
+    color: white;
+    border: none;
+    border-radius: 50px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    margin-top: 10px;
+}
+
+.login button[type="submit"]:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(110, 142, 251, 0.4);
+}

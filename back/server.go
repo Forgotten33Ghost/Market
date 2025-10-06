@@ -1,10 +1,13 @@
 package main
+
 import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"log"
 	"net/http"
 	"os"
@@ -15,23 +18,23 @@ import (
 )
 
 type product struct {
-	Id        	uint32 		`json:"id"`
-	Available 	bool   		`json:"available"`
-	Name      	string 		`json:"name"`
-	Description string 		`json:"description"`
-	Price     	float64 	`json:"price"`
-	CategoryID  uint8   	`json:"categoryID"`
-	Category	string  	`json:"category"`
-	URL       	string 		`json:"url"`
+	Id          uint32  `json:"id"`
+	Available   bool    `json:"available"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Price       float64 `json:"price"`
+	CategoryID  uint8   `json:"categoryID"`
+	Category    string  `json:"category"`
+	URL         string  `json:"url"`
 }
 
 type createProduct struct {
-	Available 	bool   		`json:"available"`
-	Name      	string 		`json:"name"`
-	Description string 		`json:"description"`
-	Price     	float64 	`json:"price"`
-	CategoryID  uint8   	`json:"categoryID"`
-	URL       	string 		`json:"url"`
+	Available   bool    `json:"available"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Price       float64 `json:"price"`
+	CategoryID  uint8   `json:"categoryID"`
+	URL         string  `json:"url"`
 }
 
 type admin struct {
@@ -48,8 +51,8 @@ type createCategory struct {
 }
 
 type category struct {
-    ID   uint32 `json:"id"`
-    Name string `json:"name"`
+	ID   uint32 `json:"id"`
+	Name string `json:"name"`
 }
 
 // Хранилище токенов в памяти
@@ -167,20 +170,34 @@ func login(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"token": token})
 }
 
-// Создание товара
+// Создание товара с возможностью загрузки изображения
 func createProductHandler(w http.ResponseWriter, r *http.Request) {
 	if !isAdmin(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	var item createProduct
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
-		log.Printf("[ERROR] createProductHandler: Ошибка декодирования: %v", err)
-		http.Error(w, "Неверные данные", http.StatusBadRequest)
+	// Парсим multipart-запрос (до 20 МБ)
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		http.Error(w, "Ошибка парсинга формы", http.StatusBadRequest)
 		return
 	}
 
+	// Извлекаем текстовые данные
+	item := createProduct{
+		Name:        r.FormValue("name"),
+		Description: r.FormValue("description"),
+		Price:       0,
+		Available:   r.FormValue("available") == "true",
+		URL:         "",
+	}
+	fmt.Sscanf(r.FormValue("price"), "%f", &item.Price)
+	var cat uint8
+	fmt.Sscanf(r.FormValue("categoryID"), "%d", &cat)
+	item.CategoryID = cat
+
+	// Подключаемся к БД
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
 		log.Printf("[ERROR] createProductHandler: Ошибка подключения к БД: %v", err)
@@ -189,9 +206,11 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
+	// Создаём запись о товаре
 	var productID int
 	err = db.QueryRow(
-		`INSERT INTO products (name, description, price, category_id, available) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+		`INSERT INTO products (name, description, price, category_id, available) 
+         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
 		item.Name, item.Description, item.Price, item.CategoryID, item.Available,
 	).Scan(&productID)
 	if err != nil {
@@ -200,33 +219,94 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if item.URL != "" {
-		_, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)", productID, item.URL)
+	// Проверяем, есть ли файл
+	file, _, err := r.FormFile("file")
+	if err == nil {
+		defer file.Close()
+
+		// Декодируем изображение
+		img, format, err := image.Decode(file)
 		if err != nil {
-			log.Printf("[ERROR] createProductHandler: Ошибка вставки изображения: %v", err)
-			http.Error(w, "Ошибка добавления изображения", http.StatusInternalServerError)
+			log.Printf("[ERROR] createProductHandler: Ошибка декодирования изображения: %v", err)
+			http.Error(w, "Неверный формат изображения", http.StatusBadRequest)
 			return
+		}
+
+		// Создаём папку uploads если нет
+		os.MkdirAll("uploads", os.ModePerm)
+
+		// Сохраняем файл как JPEG с именем по productID
+		imagePath := fmt.Sprintf("uploads/%d.jpg", productID)
+		out, err := os.Create(imagePath)
+		if err != nil {
+			log.Printf("[ERROR] createProductHandler: Ошибка создания файла: %v", err)
+			http.Error(w, "Ошибка сохранения файла", http.StatusInternalServerError)
+			return
+		}
+		defer out.Close()
+
+		// Конвертируем и сохраняем как JPEG
+		var opt jpeg.Options
+		opt.Quality = 90
+		if format != "jpeg" {
+			err = jpeg.Encode(out, img, &opt)
+		} else {
+			err = jpeg.Encode(out, img, &opt)
+		}
+		if err != nil {
+			log.Printf("[ERROR] createProductHandler: Ошибка записи JPEG: %v", err)
+			http.Error(w, "Ошибка сохранения изображения", http.StatusInternalServerError)
+			return
+		}
+
+		// Генерируем URL
+		fileURL := fmt.Sprintf("http://localhost:8080/uploads/%d.jpg", productID)
+		item.URL = fileURL
+
+		// Записываем URL в таблицу product_images
+		_, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)", productID, fileURL)
+		if err != nil {
+			log.Printf("[ERROR] createProductHandler: Ошибка записи URL в БД: %v", err)
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(item)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":          productID,
+		"name":        item.Name,
+		"description": item.Description,
+		"price":       item.Price,
+		"categoryID":  item.CategoryID,
+		"available":   item.Available,
+		"url":         item.URL,
+	})
 }
 
-// Обновление товара
+// Обновление товара с хранением изображения только на диске
 func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 	if !isAdmin(r) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	var item product
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
-		log.Printf("[ERROR] updateProductHandler: Ошибка декодирования: %v", err)
-		http.Error(w, "Неверные данные", http.StatusBadRequest)
+	// Парсим multipart-запрос (до 20 МБ)
+	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
+	if err := r.ParseMultipartForm(20 << 20); err != nil {
+		http.Error(w, "Ошибка парсинга формы", http.StatusBadRequest)
 		return
 	}
+
+	// Извлекаем текстовые поля
+	var item product
+	fmt.Sscanf(r.FormValue("id"), "%d", &item.Id)
+	item.Name = r.FormValue("name")
+	item.Description = r.FormValue("description")
+	fmt.Sscanf(r.FormValue("price"), "%f", &item.Price)
+	var cat uint8
+	fmt.Sscanf(r.FormValue("categoryID"), "%d", &cat)
+	item.CategoryID = cat
+	item.Available = r.FormValue("available") == "true"
 
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
@@ -236,8 +316,11 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
+	// Обновляем товар
 	_, err = db.Exec(
-		`UPDATE products SET name=$1, description=$2, price=$3, category_id=$4, available=$5 WHERE id=$6`,
+		`UPDATE products 
+		 SET name=$1, description=$2, price=$3, category_id=$4, available=$5 
+		 WHERE id=$6`,
 		item.Name, item.Description, item.Price, item.CategoryID, item.Available, item.Id,
 	)
 	if err != nil {
@@ -246,29 +329,43 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if item.URL != "" {
-		var imageID int
-		err = db.QueryRow("SELECT id FROM product_images WHERE product_id=$1", item.Id).Scan(&imageID)
-		if err == sql.ErrNoRows {
-			_, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1,$2)", item.Id, item.URL)
-		} else if err == nil {
-			_, err = db.Exec("UPDATE product_images SET image_url=$1 WHERE id=$2", item.URL, imageID)
+	// Проверяем, передано ли новое изображение
+	file, _, err := r.FormFile("file")
+	if err == nil {
+		defer file.Close()
+
+		// Удаляем старый файл, если существует
+		oldPath := fmt.Sprintf("uploads/%d.jpg", item.Id)
+		if _, err := os.Stat(oldPath); err == nil {
+			os.Remove(oldPath)
 		}
+
+		// Декодируем новое изображение
+		img, _, err := image.Decode(file)
 		if err != nil {
-			log.Printf("[ERROR] updateProductHandler: Ошибка обновления изображения: %v", err)
-			http.Error(w, "Ошибка обновления изображения", http.StatusInternalServerError)
+			http.Error(w, "Неверный формат изображения", http.StatusBadRequest)
 			return
 		}
+
+		// Сохраняем как JPEG
+		os.MkdirAll("uploads", os.ModePerm)
+		newPath := fmt.Sprintf("uploads/%d.jpg", item.Id)
+		out, err := os.Create(newPath)
+		if err != nil {
+			http.Error(w, "Ошибка сохранения файла", http.StatusInternalServerError)
+			return
+		}
+		defer out.Close()
+
+		jpeg.Encode(out, img, &jpeg.Options{Quality: 90})
+		item.URL = fmt.Sprintf("http://localhost:8080/%s", newPath)
 	}
 
+	// Подтягиваем название категории (если нужно)
 	row := db.QueryRow("SELECT name FROM categories WHERE id=$1", item.CategoryID)
-	if err := row.Scan(&item.Category); err != nil {
-		log.Printf("[WARN] updateProductHandler: Не удалось получить название категории: %v", err)
-		item.Category = ""
-	}
+	_ = row.Scan(&item.Category)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(item)
 }
 
@@ -336,6 +433,40 @@ func createCategoryHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// Удаление категории
+func deleteCategoryHandler(w http.ResponseWriter, r *http.Request) {
+	if !isAdmin(r) {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var data struct {
+		ID int `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		log.Printf("[ERROR] deleteCategoryHandler: Ошибка декодирования: %v", err)
+		http.Error(w, "Неверные данные", http.StatusBadRequest)
+		return
+	}
+
+	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
+	if err != nil {
+		log.Printf("[ERROR] deleteCategoryHandler: Ошибка подключения к БД: %v", err)
+		http.Error(w, "Ошибка подключения к БД", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	_, err = db.Exec("DELETE FROM categories WHERE id = $1", data.ID)
+	if err != nil {
+		log.Printf("[ERROR] deleteCategoryHandler: Ошибка удаления категории: %v", err)
+		http.Error(w, "Ошибка при удалении категории", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 // Получение категорий
 func getCategories(w http.ResponseWriter, r *http.Request) {
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
@@ -392,8 +523,9 @@ func main() {
 	mux.HandleFunc("/api/admin/update", updateProductHandler)
 	mux.HandleFunc("/api/admin/delete", deleteProductHandler)
 	mux.HandleFunc("/api/admin/category/create", createCategoryHandler)
+	mux.HandleFunc("/api/admin/category/delete", deleteCategoryHandler)
 	mux.HandleFunc("/api/categories", getCategories)
-
+	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("./uploads"))))
 
 	fmt.Println("Server is listening on :8080...")
 	http.ListenAndServe(":8080", withCORS(mux))

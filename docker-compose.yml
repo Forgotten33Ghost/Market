@@ -6,6 +6,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
+    volumes:
+      - back_data:/uploads
     depends_on:
       - db
     env_file:
@@ -38,3 +40,4 @@ services:
       - ./db/init:/docker-entrypoint-initdb.d
 volumes:
   db_data:
+  back_data:

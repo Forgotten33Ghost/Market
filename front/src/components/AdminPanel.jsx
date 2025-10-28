@@ -3,17 +3,26 @@ import axios from "axios";
 import "../styles/AdminPanel.css";
 
 function AdminPanel({ token }) {
+  const asItemsArray = (data) => {
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.items)) return data.items;
+    return [];
+  };
+  const asArray = (data) => (Array.isArray(data) ? data : []);
+
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [editingProduct, setEditingProduct] = useState(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newCategory, setNewCategory] = useState("");
+
   const [formData, setFormData] = useState({
     name: "",
     description: "",
     price: "",
     categoryID: "",
     available: false,
+    buyUrl: "",
   });
   const [file, setFile] = useState(null);
 
@@ -24,19 +33,23 @@ function AdminPanel({ token }) {
 
   const fetchProducts = async () => {
     try {
-      const res = await axios.get("http://localhost:8080/api/read");
-      setProducts(res.data);
-    } catch (err) {
+      const res = await axios.get("http://localhost:8080/api/read", {
+        params: { page: 1, page_size: 1000 },
+      });
+      setProducts(asItemsArray(res.data));
+    } catch {
       alert("Ошибка загрузки товаров");
+      setProducts([]);
     }
   };
 
   const fetchCategories = async () => {
     try {
       const res = await axios.get("http://localhost:8080/api/categories");
-      setCategories(res.data);
-    } catch (err) {
+      setCategories(asArray(res.data));
+    } catch {
       alert("Ошибка загрузки категорий");
+      setCategories([]);
     }
   };
 
@@ -47,6 +60,7 @@ function AdminPanel({ token }) {
       price: "",
       categoryID: "",
       available: false,
+      buyUrl: "",
     });
     setFile(null);
     setIsCreateModalOpen(true);
@@ -60,11 +74,8 @@ function AdminPanel({ token }) {
     }));
   };
 
-  const handleFileChange = (e) => {
-    setFile(e.target.files[0]);
-  };
+  const handleFileChange = (e) => setFile(e.target.files[0] || null);
 
-  // --- Создание категории ---
   const handleCreateCategory = async () => {
     if (!newCategory.trim()) return alert("Введите название категории");
     try {
@@ -80,7 +91,6 @@ function AdminPanel({ token }) {
     }
   };
 
-  // --- Удаление категории ---
   const handleDeleteCategory = async (id) => {
     if (!window.confirm("Удалить категорию?")) return;
     try {
@@ -95,7 +105,6 @@ function AdminPanel({ token }) {
     }
   };
 
-  // Создание нового товара
   const handleCreateSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -104,7 +113,8 @@ function AdminPanel({ token }) {
       data.append("description", formData.description);
       data.append("price", formData.price);
       data.append("categoryID", formData.categoryID);
-      data.append("available", formData.available);
+      data.append("available", String(formData.available));
+      data.append("buy_url", formData.buyUrl);
       if (file) data.append("file", file);
 
       await axios.post("http://localhost:8080/api/admin/create", data, {
@@ -116,13 +126,11 @@ function AdminPanel({ token }) {
 
       setIsCreateModalOpen(false);
       fetchProducts();
-    } catch (error) {
-      console.error(error);
+    } catch {
       alert("Ошибка при создании товара");
     }
   };
 
-  // --- Редактирование товара ---
   const handleEditSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -132,7 +140,8 @@ function AdminPanel({ token }) {
       data.append("description", formData.description);
       data.append("price", formData.price);
       data.append("categoryID", formData.categoryID);
-      data.append("available", formData.available);
+      data.append("available", String(formData.available));
+      data.append("buy_url", formData.buyUrl);
       if (file) data.append("file", file);
 
       await axios.post("http://localhost:8080/api/admin/update", data, {
@@ -158,7 +167,7 @@ function AdminPanel({ token }) {
         { headers: { "X-Admin-Token": token } }
       );
       setProducts((prev) => prev.filter((p) => p.id !== id));
-    } catch (error) {
+    } catch {
       alert("Ошибка при удалении товара");
     }
   };
@@ -166,11 +175,12 @@ function AdminPanel({ token }) {
   const openEditModal = (product) => {
     setEditingProduct(product);
     setFormData({
-      name: product.name,
-      description: product.description,
-      price: product.price,
-      categoryID: product.categoryID,
-      available: product.available,
+      name: product.name ?? "",
+      description: product.description ?? "",
+      price: String(product.price ?? ""),
+      categoryID: String(product.categoryID ?? ""),
+      available: Boolean(product.available),
+      buyUrl: product.buyUrl ?? "",
     });
     setFile(null);
   };
@@ -180,9 +190,7 @@ function AdminPanel({ token }) {
     setEditingProduct(null);
   };
 
-  const modalTitle = isCreateModalOpen
-    ? "Добавить новый товар"
-    : "Редактирование товара";
+  const modalTitle = isCreateModalOpen ? "Добавить новый товар" : "Редактирование товара";
 
   return (
     <div className="admin-panel">
@@ -191,17 +199,10 @@ function AdminPanel({ token }) {
       <div className="categories-section">
         <h2>Категории</h2>
         <div className="categories-list">
-          {categories.map((c) => (
+          {(categories || []).map((c) => (
             <div key={c.id} className="category-item">
-              <span>
-                {c.id}. {c.name}
-              </span>
-              <button
-                className="delete-cat-btn"
-                onClick={() => handleDeleteCategory(c.id)}
-              >
-                ×
-              </button>
+              <span>{c.id}. {c.name}</span>
+              <button className="delete-cat-btn" onClick={() => handleDeleteCategory(c.id)}>×</button>
             </div>
           ))}
         </div>
@@ -221,7 +222,6 @@ function AdminPanel({ token }) {
         Добавить новый товар
       </button>
 
-      {/* Таблица товаров */}
       <table className="products-table">
         <thead>
           <tr>
@@ -230,95 +230,74 @@ function AdminPanel({ token }) {
             <th>Цена</th>
             <th>В наличии</th>
             <th>Категория</th>
+            <th>Купить URL</th>
             <th>Картинка</th>
             <th>Действия</th>
           </tr>
         </thead>
         <tbody>
-          {products.map((p) => (
+          {(products || []).map((p) => (
             <tr key={p.id}>
               <td>{p.id}</td>
               <td>{p.name}</td>
               <td>{p.price} ₽</td>
               <td>{p.available ? "Да" : "Нет"}</td>
-              <td>
-                {categories.find((c) => c.id === p.categoryID)?.name || "-"}
-              </td>
+              <td>{(categories || []).find((c) => Number(c.id) === Number(p.categoryID))?.name || "-"}</td>
+              <td>{p.buyUrl ? <a href={p.buyUrl} target="_blank" rel="noreferrer">🔗</a> : "-"}</td>
               <td>
                 <img
-                  src={`http://localhost:8080/uploads/${p.id}.jpg?${Date.now()}`}
-                  alt="Ошибка загрузки"
-                  style={{ width: "60px", height: "60px", objectFit: "cover" }}
-                  onError={(e) => (e.target.style.display = "none")}
+                  src={p.url || `http://localhost:8080/uploads/${p.id}.jpg`}
+                  alt="preview"
+                  style={{ width: 60, height: 60, objectFit: "cover" }}
+                  onError={(e) => (e.currentTarget.style.display = "none")}
                 />
               </td>
               <td>
-                <button onClick={() => openEditModal(p)} className="edit-button">
-                  Редактировать
-                </button>
-                <button
-                  onClick={() => handleDeleteClick(p.id)}
-                  className="delete-button"
-                >
-                  Удалить
-                </button>
+                <button onClick={() => openEditModal(p)} className="edit-button">Редактировать</button>
+                <button onClick={() => handleDeleteClick(p.id)} className="delete-button">Удалить</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      {/* Модальное окно */}
       {(isCreateModalOpen || editingProduct) && (
         <div className="modal">
           <div className="modal-content">
             <h3>{modalTitle}</h3>
-            <form
-              onSubmit={isCreateModalOpen ? handleCreateSubmit : handleEditSubmit}
-            >
+            <form onSubmit={isCreateModalOpen ? handleCreateSubmit : handleEditSubmit}>
               <div className="form-group">
                 <label>Название:</label>
-                <input
-                  type="text"
-                  name="name"
-                  value={formData.name}
-                  onChange={handleInputChange}
-                  required
-                />
+                <input type="text" name="name" value={formData.name} onChange={handleInputChange} required />
               </div>
 
               <div className="form-group">
                 <label>Описание:</label>
-                <textarea
-                  name="description"
-                  value={formData.description}
-                  onChange={handleInputChange}
-                  rows={3}
-                />
+                <textarea name="description" value={formData.description} onChange={handleInputChange} rows={3} />
               </div>
 
               <div className="form-group">
                 <label>Цена:</label>
+                <input type="number" name="price" value={formData.price} onChange={handleInputChange} required />
+              </div>
+
+              <div className="form-group">
+                <label>Ссылка на покупку (Buy URL):</label>
                 <input
-                  type="number"
-                  name="price"
-                  value={formData.price}
+                  type="text"
+                  name="buyUrl"
+                  value={formData.buyUrl}
                   onChange={handleInputChange}
-                  required
+                  placeholder="https://example.com/item"
                 />
               </div>
 
               <div className="form-group">
                 <label>Категория:</label>
-                <select
-                  name="categoryID"
-                  value={formData.categoryID}
-                  onChange={handleInputChange}
-                  required
-                >
+                <select name="categoryID" value={formData.categoryID} onChange={handleInputChange} required>
                   <option value="">-- выберите категорию --</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
+                  {(categories || []).map((c) => (
+                    <option key={c.id} value={String(c.id)}>
                       {c.id}. {c.name}
                     </option>
                   ))}
@@ -327,12 +306,7 @@ function AdminPanel({ token }) {
 
               <div className="form-group checkbox">
                 <label>
-                  <input
-                    type="checkbox"
-                    name="available"
-                    checked={formData.available}
-                    onChange={handleInputChange}
-                  />
+                  <input type="checkbox" name="available" checked={formData.available} onChange={handleInputChange} />
                   В наличии
                 </label>
               </div>
@@ -344,7 +318,7 @@ function AdminPanel({ token }) {
                   <small>
                     Текущее изображение:{" "}
                     <a
-                      href={`http://localhost:8080/uploads/${editingProduct.id}.jpg`}
+                      href={editingProduct.url || `http://localhost:8080/uploads/${editingProduct.id}.jpg`}
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -355,12 +329,8 @@ function AdminPanel({ token }) {
               </div>
 
               <div className="form-actions">
-                <button type="submit">
-                  {isCreateModalOpen ? "Создать" : "Сохранить"}
-                </button>
-                <button type="button" onClick={closeModal}>
-                  Отмена
-                </button>
+                <button type="submit">{isCreateModalOpen ? "Создать" : "Сохранить"}</button>
+                <button type="button" onClick={closeModal}>Отмена</button>
               </div>
             </form>
           </div>

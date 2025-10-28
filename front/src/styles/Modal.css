@@ -1,0 +1,122 @@
+/* Затемнённый фон */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 20, 25, 0.65);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+/* Карточка модалки */
+.modal-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: min(100%, 1000px);
+  max-height: 90vh;
+  overflow: auto;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 10px 50px rgba(0,0,0,0.2);
+  padding: 24px;
+}
+
+/* Крестик */
+.modal-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: transparent;
+  border: none;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.modal-close:hover { opacity: 1; }
+
+/* Левая колонка — изображение */
+.modal-media {
+  position: relative;
+  background: #f7f7f9;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+.modal-media img {
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+}
+.modal-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  background: linear-gradient(45deg, #ff5252, #f44336);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(244, 67, 54, 0.35);
+}
+
+/* Правая колонка — контент */
+.modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-title {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.2;
+  color: #2d3436;
+}
+.modal-meta {
+  color: #555;
+  font-size: 14px;
+}
+.modal-desc {
+  color: #333;
+  line-height: 1.6;
+}
+.modal-price {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 800;
+  color: #27ae60;
+}
+.modal-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* Кнопки */
+.buy-btn {
+  padding: 12px 22px;
+  background: linear-gradient(135deg, #6e8efb, #a777e3);
+  color: white;
+  border: none;
+  border-radius: 999px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(110, 142, 251, 0.35);
+}
+.buy-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.ghost-btn {
+  padding: 12px 18px;
+  background: transparent;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  cursor: pointer;
+}

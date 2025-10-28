@@ -1,0 +1,109 @@
+/* Поиск сверху */
+.searchbar-wrap {
+  max-width: 1400px;
+  margin: 0 auto 16px;
+  padding: 0 20px;
+}
+.searchbar-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  font-size: 15px;
+  outline: none;
+}
+
+/* Основной макет: слева фильтры, справа товары */
+.main-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 20px 20px;
+}
+
+/* Сайдбар фильтров */
+.sidebar {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  background: #fff;
+  border: 1px solid #f0f0f0;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sidebar-group label { 
+  display:block; 
+  margin-bottom:6px; 
+  font-weight:600; 
+  color:#374151; 
+}
+.sidebar-group select,
+.sidebar-group input[type="number"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+}
+
+.price-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.price-row input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.price-row span {
+  flex: 0 0 auto;
+}
+
+.sidebar-group input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.sidebar-group input[type="number"]::-webkit-outer-spin-button,
+.sidebar-group input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.checkbox {
+  display: flex; 
+  gap: 8px; 
+  align-items: center; 
+  user-select: none;
+}
+.reset-btn {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+  cursor: pointer;
+}
+
+.items-wrap { /* обертка, чтобы тени не слипались со стороночкой */ }
+
+* { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
+
+.items-wrap .Items {
+  max-width: 100% !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+.Items .item-card {
+  margin: 0 !important;
+  width: 100%;
+}

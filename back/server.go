@@ -11,6 +11,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,7 @@ type product struct {
 	CategoryID  uint8   `json:"categoryID"`
 	Category    string  `json:"category"`
 	URL         string  `json:"url"`
+	BuyURL      string  `json:"buyUrl"`
 }
 
 type createProduct struct {
@@ -35,6 +38,7 @@ type createProduct struct {
 	Price       float64 `json:"price"`
 	CategoryID  uint8   `json:"categoryID"`
 	URL         string  `json:"url"`
+	BuyURL      string  `json:"buyUrl"`
 }
 
 type admin struct {
@@ -53,6 +57,11 @@ type createCategory struct {
 type category struct {
 	ID   uint32 `json:"id"`
 	Name string `json:"name"`
+}
+
+type productsResponse struct {
+	Items []product `json:"items"`
+	Total int64     `json:"total"`
 }
 
 // Хранилище токенов в памяти
@@ -89,7 +98,7 @@ func getDBWithUser(user, password string) (*sql.DB, error) {
 	return sql.Open("postgres", connStr)
 }
 
-// Получение всех товаров
+// Получение товаров
 func readProducts(w http.ResponseWriter, r *http.Request) {
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
@@ -99,33 +108,142 @@ func readProducts(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	rows, err := db.Query(`
-		SELECT p.id, p.name, p.description, p.price, p.category_id, c.name as category_name, p.available,
-		       pi.image_url
+	q := r.URL.Query()
+
+	search := strings.TrimSpace(q.Get("search"))
+	categoryName := strings.TrimSpace(q.Get("category"))
+	categoryIDStr := strings.TrimSpace(q.Get("category_id"))
+	minPriceStr := strings.TrimSpace(q.Get("min_price"))
+	maxPriceStr := strings.TrimSpace(q.Get("max_price"))
+	inStock := strings.EqualFold(q.Get("in_stock"), "true")
+
+	sortParam := strings.TrimSpace(q.Get("sort"))
+	orderBy := "p.price ASC"
+	switch sortParam {
+	case "price_asc":
+		orderBy = "p.price ASC"
+	case "price_desc":
+		orderBy = "p.price DESC"
+	case "name_asc":
+		orderBy = "p.name ASC"
+	case "name_desc":
+		orderBy = "p.name DESC"
+	}
+
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(q.Get("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 24
+	}
+	offset := (page - 1) * pageSize
+
+	var where []string
+	var args []any
+	nextArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+
+	if search != "" {
+		p := "%" + strings.ToLower(search) + "%"
+		where = append(where, fmt.Sprintf("(LOWER(p.name) LIKE %s OR LOWER(p.description) LIKE %s)", nextArg(p), nextArg(p)))
+	}
+	if categoryIDStr != "" {
+		where = append(where, fmt.Sprintf("p.category_id = %s", nextArg(categoryIDStr)))
+	} else if categoryName != "" {
+		where = append(where, fmt.Sprintf("LOWER(c.name) = %s", nextArg(strings.ToLower(categoryName))))
+	}
+	if minPriceStr != "" {
+		where = append(where, fmt.Sprintf("p.price >= %s", nextArg(minPriceStr)))
+	}
+	if maxPriceStr != "" {
+		where = append(where, fmt.Sprintf("p.price <= %s", nextArg(maxPriceStr)))
+	}
+	if inStock {
+		where = append(where, "p.available = TRUE")
+	}
+
+	baseFrom := `
 		FROM products p
-		LEFT JOIN categories c ON p.category_id = c.id
-		LEFT JOIN product_images pi ON pi.product_id = p.id
-	`)
+		LEFT JOIN categories c ON c.id = p.category_id
+	`
+	if len(where) > 0 {
+		baseFrom += " WHERE " + strings.Join(where, " AND ")
+	}
+
+	// total
+	var total int64
+	countSQL := "SELECT COUNT(*) " + baseFrom
+	if err := db.QueryRow(countSQL, args...).Scan(&total); err != nil {
+		log.Printf("[ERROR] readProducts: db count error: %v", err)
+		http.Error(w, "Ошибка запроса к базе (count)", http.StatusInternalServerError)
+		return
+	}
+
+	// items: первая картинка подзапросом + p.buy_url
+	itemsSQL := `
+  SELECT
+    p.id,
+    p.available,
+    p.name,
+    COALESCE(p.description, ''),
+    p.price,
+    COALESCE(p.category_id, 0) AS category_id,
+    COALESCE(c.name, '') AS category,
+    COALESCE((
+      SELECT pi.image_url
+      FROM product_images pi
+      WHERE pi.product_id = p.id
+      ORDER BY pi.id
+      LIMIT 1
+    ), '') AS url,
+    COALESCE(p.buy_url, '') AS buyUrl
+` + baseFrom + `
+  ORDER BY ` + orderBy + `
+  LIMIT $` + strconv.Itoa(len(args)+1) + ` OFFSET $` + strconv.Itoa(len(args)+2)
+
+	argsWithPage := append([]any{}, args...)
+	argsWithPage = append(argsWithPage, pageSize, offset)
+
+	rows, err := db.Query(itemsSQL, argsWithPage...)
 	if err != nil {
-		log.Printf("[ERROR] readProducts: Ошибка запроса к базе: %v", err)
-		http.Error(w, "Ошибка запроса к базе", http.StatusInternalServerError)
+		log.Printf("[ERROR] readProducts: db select error: %v", err)
+		http.Error(w, "Ошибка запроса к базе (select)", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	products := []product{}
+	items := make([]product, 0, pageSize)
 	for rows.Next() {
-		p := product{}
-		if err := rows.Scan(&p.Id, &p.Name, &p.Description, &p.Price, &p.CategoryID, &p.Category, &p.Available, &p.URL); err != nil {
-			log.Printf("[ERROR] readProducts: Ошибка чтения данных: %v", err)
+		var p product
+		if err := rows.Scan(
+			&p.Id,
+			&p.Available,
+			&p.Name,
+			&p.Description,
+			&p.Price,
+			&p.CategoryID,
+			&p.Category,
+			&p.URL,
+			&p.BuyURL,
+		); err != nil {
+			log.Printf("[ERROR] readProducts: scan error: %v", err)
 			http.Error(w, "Ошибка чтения данных", http.StatusInternalServerError)
 			return
 		}
-		products = append(products, p)
+		items = append(items, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("[ERROR] readProducts: rows error: %v", err)
+		http.Error(w, "Ошибка чтения данных", http.StatusInternalServerError)
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(products)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(productsResponse{Items: items, Total: total})
 }
 
 // Логин админа
@@ -177,27 +295,25 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Парсим multipart-запрос (до 20 МБ)
+	// до 20 МБ
 	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	if err := r.ParseMultipartForm(20 << 20); err != nil {
 		http.Error(w, "Ошибка парсинга формы", http.StatusBadRequest)
 		return
 	}
 
-	// Извлекаем текстовые данные
 	item := createProduct{
 		Name:        r.FormValue("name"),
 		Description: r.FormValue("description"),
-		Price:       0,
 		Available:   r.FormValue("available") == "true",
 		URL:         "",
+		BuyURL:      r.FormValue("buy_url"), // <— НОВОЕ ПОЛЕ
 	}
 	fmt.Sscanf(r.FormValue("price"), "%f", &item.Price)
 	var cat uint8
 	fmt.Sscanf(r.FormValue("categoryID"), "%d", &cat)
 	item.CategoryID = cat
 
-	// Подключаемся к БД
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
 		log.Printf("[ERROR] createProductHandler: Ошибка подключения к БД: %v", err)
@@ -206,12 +322,12 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	// Создаём запись о товаре
+	// сохраняем товар + buy_url
 	var productID int
 	err = db.QueryRow(
-		`INSERT INTO products (name, description, price, category_id, available) 
-         VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-		item.Name, item.Description, item.Price, item.CategoryID, item.Available,
+		`INSERT INTO products (name, description, price, category_id, available, buy_url)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		item.Name, item.Description, item.Price, item.CategoryID, item.Available, item.BuyURL,
 	).Scan(&productID)
 	if err != nil {
 		log.Printf("[ERROR] createProductHandler: Ошибка создания товара: %v", err)
@@ -219,23 +335,18 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем, есть ли файл
+	// изображение (необязательное)
 	file, _, err := r.FormFile("file")
 	if err == nil {
 		defer file.Close()
 
-		// Декодируем изображение
-		img, format, err := image.Decode(file)
+		img, _, err := image.Decode(file)
 		if err != nil {
 			log.Printf("[ERROR] createProductHandler: Ошибка декодирования изображения: %v", err)
 			http.Error(w, "Неверный формат изображения", http.StatusBadRequest)
 			return
 		}
-
-		// Создаём папку uploads если нет
 		os.MkdirAll("uploads", os.ModePerm)
-
-		// Сохраняем файл как JPEG с именем по productID
 		imagePath := fmt.Sprintf("uploads/%d.jpg", productID)
 		out, err := os.Create(imagePath)
 		if err != nil {
@@ -245,28 +356,16 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer out.Close()
 
-		// Конвертируем и сохраняем как JPEG
-		var opt jpeg.Options
-		opt.Quality = 90
-		if format != "jpeg" {
-			err = jpeg.Encode(out, img, &opt)
-		} else {
-			err = jpeg.Encode(out, img, &opt)
-		}
-		if err != nil {
+		if err := jpeg.Encode(out, img, &jpeg.Options{Quality: 90}); err != nil {
 			log.Printf("[ERROR] createProductHandler: Ошибка записи JPEG: %v", err)
 			http.Error(w, "Ошибка сохранения изображения", http.StatusInternalServerError)
 			return
 		}
 
-		// Генерируем URL
 		fileURL := fmt.Sprintf("http://localhost:8080/uploads/%d.jpg", productID)
 		item.URL = fileURL
-
-		// Записываем URL в таблицу product_images
-		_, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)", productID, fileURL)
-		if err != nil {
-			log.Printf("[ERROR] createProductHandler: Ошибка записи URL в БД: %v", err)
+		if _, err = db.Exec("INSERT INTO product_images (product_id, image_url) VALUES ($1, $2)", productID, fileURL); err != nil {
+			log.Printf("[WARN] createProductHandler: Не удалось записать URL в product_images: %v", err)
 		}
 	}
 
@@ -279,7 +378,8 @@ func createProductHandler(w http.ResponseWriter, r *http.Request) {
 		"price":       item.Price,
 		"categoryID":  item.CategoryID,
 		"available":   item.Available,
-		"url":         item.URL,
+		"url":         item.URL,    // картинка
+		"buyUrl":      item.BuyURL, // ссылка "Купить"
 	})
 }
 
@@ -290,14 +390,13 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Парсим multipart-запрос (до 20 МБ)
+	// до 20 МБ
 	r.Body = http.MaxBytesReader(w, r.Body, 20<<20)
 	if err := r.ParseMultipartForm(20 << 20); err != nil {
 		http.Error(w, "Ошибка парсинга формы", http.StatusBadRequest)
 		return
 	}
 
-	// Извлекаем текстовые поля
 	var item product
 	fmt.Sscanf(r.FormValue("id"), "%d", &item.Id)
 	item.Name = r.FormValue("name")
@@ -307,6 +406,7 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Sscanf(r.FormValue("categoryID"), "%d", &cat)
 	item.CategoryID = cat
 	item.Available = r.FormValue("available") == "true"
+	item.BuyURL = r.FormValue("buy_url") // <— НОВОЕ ПОЛЕ
 
 	db, err := getDBWithUser(os.Getenv("DB_USER"), os.Getenv("DB_PASSWORD"))
 	if err != nil {
@@ -316,12 +416,12 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	// Обновляем товар
+	// обновляем запись
 	_, err = db.Exec(
 		`UPDATE products 
-		 SET name=$1, description=$2, price=$3, category_id=$4, available=$5 
-		 WHERE id=$6`,
-		item.Name, item.Description, item.Price, item.CategoryID, item.Available, item.Id,
+		 SET name=$1, description=$2, price=$3, category_id=$4, available=$5, buy_url=$6
+		 WHERE id=$7`,
+		item.Name, item.Description, item.Price, item.CategoryID, item.Available, item.BuyURL, item.Id,
 	)
 	if err != nil {
 		log.Printf("[ERROR] updateProductHandler: Ошибка обновления товара: %v", err)
@@ -329,25 +429,23 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем, передано ли новое изображение
+	// новая картинка (если прислали)
 	file, _, err := r.FormFile("file")
 	if err == nil {
 		defer file.Close()
 
-		// Удаляем старый файл, если существует
+		// удаляем старый файл (если был)
 		oldPath := fmt.Sprintf("uploads/%d.jpg", item.Id)
 		if _, err := os.Stat(oldPath); err == nil {
-			os.Remove(oldPath)
+			_ = os.Remove(oldPath)
 		}
 
-		// Декодируем новое изображение
 		img, _, err := image.Decode(file)
 		if err != nil {
 			http.Error(w, "Неверный формат изображения", http.StatusBadRequest)
 			return
 		}
 
-		// Сохраняем как JPEG
 		os.MkdirAll("uploads", os.ModePerm)
 		newPath := fmt.Sprintf("uploads/%d.jpg", item.Id)
 		out, err := os.Create(newPath)
@@ -357,11 +455,14 @@ func updateProductHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer out.Close()
 
-		jpeg.Encode(out, img, &jpeg.Options{Quality: 90})
+		if err := jpeg.Encode(out, img, &jpeg.Options{Quality: 90}); err != nil {
+			http.Error(w, "Ошибка сохранения изображения", http.StatusInternalServerError)
+			return
+		}
 		item.URL = fmt.Sprintf("http://localhost:8080/%s", newPath)
 	}
 
-	// Подтягиваем название категории (если нужно)
+	// подтягиваем имя категории (для удобства ответа)
 	row := db.QueryRow("SELECT name FROM categories WHERE id=$1", item.CategoryID)
 	_ = row.Scan(&item.Category)
 

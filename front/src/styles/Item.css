@@ -8,8 +8,8 @@
     background: white;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
     transition: all 0.3s ease;
-    width: 280px;
-    margin: 15px;
+    width: 100%;
+    margin: 0;
     position: relative;
     overflow: hidden;
     border: 1px solid #f0f0f0;
@@ -101,39 +101,34 @@
     transform: translateY(0);
 }
 
-/* Адаптация для мобильных */
-@media (max-width: 768px) {
-    .item-card {
-        width: calc(50% - 20px);
-        padding: 15px;
-        margin: 10px;
-    }
-    
-    .item-card img {
-        height: 150px;
-    }
-    
-    .item-card h1 {
-        font-size: 16px;
-    }
-    
-    .price {
-        font-size: 18px;
-    }
-    
-    button {
-        padding: 10px 20px;
-        font-size: 14px;
-    }
+.item-actions {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  justify-content: center;
 }
 
-@media (max-width: 480px) {
-    .item-card {
-        width: 100%;
-        margin: 10px 0;
-    }
-    
-    .item-card img {
-        height: 130px;
-    }
+.more-btn, .buy-inline {
+  flex: 1;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.more-btn {
+  background: #eef2ff;
+  color: #4338ca;
+}
+.more-btn:hover { filter: brightness(0.97); }
+
+.buy-inline {
+  background: linear-gradient(135deg, #6e8efb, #a777e3);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(110, 142, 251, 0.3);
+}
+.buy-inline:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
